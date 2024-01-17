@@ -258,7 +258,6 @@ class MongoDBTLS(Object):
             f"{self.charm.app.name}-{unit_id}",
             socket.getfqdn(),
             f"{self.charm.app.name}-{unit_id}.{self.charm.app.name}-endpoints",
-            str(self.charm.model.get_binding(self.peer_relation).network.bind_address),
         ]
 
     def get_tls_files(self, scope: Scopes) -> Tuple[Optional[str], Optional[str]]:
