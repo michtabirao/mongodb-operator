@@ -1365,6 +1365,9 @@ class MongodbOperatorCharm(CharmBase):
                 "Relation to mongos not supported, config role must be config-server"
             )
 
+        if not self.backups.is_valid_s3_integration:
+            return BlockedStatus("Relation to s3-integrator not supported as shard.")
+
     def get_status(self) -> StatusBase:
         """Returns the status with the highest priority from backups, sharding, and mongod.
 
