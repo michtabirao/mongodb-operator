@@ -121,7 +121,7 @@ class MongoDBBackups(Object):
         self.framework.observe(self.charm.on.restore_action, self._on_restore_action)
 
     def _on_relation_joined(self, _):
-        if not self.is_valid_s3_integration():
+        if not self.is_valid_s3_integration:
             self.charm.unit.status = BlockedStatus(
                 "Relation to s3-integrator not supported as shard."
             )
@@ -132,7 +132,7 @@ class MongoDBBackups(Object):
         # handling PBM configurations requires that MongoDB is running and the pbm snap is
         # installed.
         action = "configure-pbm"
-        if not self.is_valid_s3_integration():
+        if not self.is_valid_s3_integration:
             self.charm.unit.status = BlockedStatus(
                 "Relation to s3-integrator not supported as shard."
             )
