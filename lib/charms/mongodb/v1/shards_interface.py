@@ -34,6 +34,7 @@ from charms.mongodb.v1.users import BackupUser, MongoDBUser, OperatorUser
 from ops.charm import CharmBase, EventBase, RelationBrokenEvent
 from ops.framework import Object
 from ops.model import (
+    Application,
     ActiveStatus,
     BlockedStatus,
     MaintenanceStatus,
@@ -398,9 +399,12 @@ class ShardingProvider(Object):
         """Returns True if currently related to shards."""
         return len(self.charm.model.relations[self.relation_name]) > 0
 
-    def get_related_shards(self) -> List[str]:
+    def get_related_shards(self) -> List[Application]:
         """Returns a list of related shards."""
-        return [rel.app.name for rel in self.charm.model.relations[self.relation_name]]
+        if not self.charm.is_role(Config.Role.CONFIG_SERVER):
+            return []
+
+        return [rel.app for rel in self.charm.model.relations[self.relation_name]]
 
     def get_unreachable_shards(self) -> List[str]:
         """Returns a list of unreable shard hosts."""
@@ -409,8 +413,8 @@ class ShardingProvider(Object):
             logger.info("shards are not reachable, none related to config-sever")
             return unreachable_hosts
 
-        for shard_name in self.get_related_shards():
-            shard_hosts = self._get_shard_hosts(shard_name)
+        for shard in self.get_related_shards():
+            shard_hosts = self._get_shard_hosts(shard.name)
             if not shard_hosts:
                 return unreachable_hosts
 
@@ -419,7 +423,7 @@ class ShardingProvider(Object):
             uri = f"mongodb://{','.join(shard_hosts)}"
             with MongoDBConnection(None, uri) as mongo:
                 if not mongo.is_ready:
-                    unreachable_hosts.append(shard_name)
+                    unreachable_hosts.append(shard.name)
 
         return unreachable_hosts
 

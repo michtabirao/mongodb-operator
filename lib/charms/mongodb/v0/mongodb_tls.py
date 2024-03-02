@@ -21,6 +21,7 @@ from charms.tls_certificates_interface.v1.tls_certificates import (
     generate_csr,
     generate_private_key,
 )
+from ops.model import Application
 from ops.charm import ActionEvent, RelationBrokenEvent, RelationJoinedEvent
 from ops.framework import Object
 from ops.model import ActiveStatus, MaintenanceStatus, Unit, WaitingStatus
@@ -259,12 +260,35 @@ class MongoDBTLS(Object):
         Returns:
             A list representing the hostnames of the MongoDB unit.
         """
+        # TODO add a check for internal certs
         unit_id = self.charm.unit.name.split("/")[1]
-        return [
+
+        sans = [
             f"{self.charm.app.name}-{unit_id}",
+            f"*.{self.charm.app.name}-{unit_id}",
             socket.getfqdn(),
             f"{self.charm.app.name}-{unit_id}.{self.charm.app.name}-endpoints",
             str(self.charm.model.get_binding(self.peer_relation).network.bind_address),
+        ]
+
+        # TODO replace with generalaised function
+        for shard_relation in self.charm.model.relations[
+            Config.Relations.CONFIG_SERVER_RELATIONS_NAME
+        ]:
+            shard_sans = self._generate_shard_sans(shard_relation)
+            sans.extend(shard_sans)
+        return sans
+
+    def _generate_shard_sans(self, shard_relation):
+        shard_app_name = shard_relation.app.name
+        shard_host = self.charm.config_server._get_shard_hosts(shard_app_name)[0]
+        shard_units = list(shard_relation.units)
+        shard_unit_id = shard_units[0].name.split("/")[1]
+        return [
+            f"{shard_app_name}-{shard_unit_id}",
+            f"*.{shard_app_name}-{shard_unit_id}",
+            f"{shard_app_name}-{shard_unit_id}.{shard_app_name}-endpoints",
+            str(shard_host),
         ]
 
     def get_tls_files(self, scope: Scopes) -> Tuple[Optional[str], Optional[str]]:
