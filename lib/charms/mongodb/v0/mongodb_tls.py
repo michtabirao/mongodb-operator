@@ -72,6 +72,7 @@ class MongoDBTLS(Object):
 
     def is_tls_enabled(self, scope: Scopes):
         """Returns a boolean indicating if TLS for a given `scope` is enabled."""
+        # this should be fixdd wihtout any needed changes as soon as we set the secrets in the sharding relation interface
         return self.charm.get_secret(scope, Config.TLS.SECRET_CERT_LABEL) is not None
 
     def _on_set_tls_private_key(self, event: ActionEvent) -> None:
@@ -83,6 +84,11 @@ class MongoDBTLS(Object):
             if not self.charm.unit.is_leader():
                 event.log(
                     "Only juju leader unit can set private key for the internal certificate. Skipping."
+                )
+                return
+            if self.charm.is_role(Config.Role.SHARD):
+                event.log(
+                    "Only the config-server can set the private key for the internal certifcate. Skipping."
                 )
                 return
 
@@ -101,7 +107,7 @@ class MongoDBTLS(Object):
             private_key=key,
             subject=self.get_host(self.charm.unit),
             organization=self.charm.app.name,
-            sans=self._get_sans(),
+            sans=self._get_sans(external=scope == UNIT_SCOPE),
             sans_ip=[str(self.charm.model.get_binding(self.peer_relation).network.bind_address)],
         )
 
@@ -129,7 +135,8 @@ class MongoDBTLS(Object):
 
     def _on_tls_relation_joined(self, _: RelationJoinedEvent) -> None:
         """Request certificate when TLS relation joined."""
-        if self.charm.unit.is_leader():
+        # Shards use the same internal certs set by the config-server
+        if self.charm.unit.is_leader() and not self.charm.is_role(Config.Role.SHARD):
             self._request_certificate(APP_SCOPE, None)
 
         self._request_certificate(UNIT_SCOPE, None)
@@ -184,9 +191,13 @@ class MongoDBTLS(Object):
             self.charm.set_secret(scope, Config.TLS.SECRET_CERT_LABEL, event.certificate)
             self.charm.set_secret(scope, Config.TLS.SECRET_CA_LABEL, event.ca)
 
+        if self.charm.is_role(Config.Role.CONFIG_SERVER):
+            # TODO notify all shards of new internal certs
+            pass
+
         if self._waiting_for_certs():
             logger.debug(
-                "Defer till both internal and external TLS certificates available to avoid second restart."
+                "Defer until both internal and external TLS certificates available to avoid second restart."
             )
             event.defer()
             return
@@ -206,7 +217,9 @@ class MongoDBTLS(Object):
 
     def _waiting_for_certs(self):
         """Returns a boolean indicating whether additional certs are needed."""
-        if not self.charm.get_secret(APP_SCOPE, Config.TLS.SECRET_CERT_LABEL):
+        if not self.charm.is_role(Config.Role.SHARD) and not self.charm.get_secret(
+            APP_SCOPE, Config.TLS.SECRET_CERT_LABEL
+        ):
             logger.debug("Waiting for application certificate.")
             return True
         if not self.charm.get_secret(UNIT_SCOPE, Config.TLS.SECRET_CERT_LABEL):
@@ -242,7 +255,7 @@ class MongoDBTLS(Object):
             private_key=key,
             subject=self.get_host(self.charm.unit),
             organization=self.charm.app.name,
-            sans=self._get_sans(),
+            sans=self._get_sans(external=scope == UNIT_SCOPE),
             sans_ip=[str(self.charm.model.get_binding(self.peer_relation).network.bind_address)],
         )
         logger.debug("Requesting a certificate renewal.")
@@ -254,13 +267,15 @@ class MongoDBTLS(Object):
 
         self.charm.set_secret(scope, Config.TLS.SECRET_CSR_LABEL, new_csr.decode("utf-8"))
 
-    def _get_sans(self) -> List[str]:
+    def _get_sans(self, external: bool) -> List[str]:
         """Create a list of DNS names for a MongoDB unit.
+
+        Args:
+            external: boolean indicating whether the certificate is for external or internal connections
 
         Returns:
             A list representing the hostnames of the MongoDB unit.
         """
-        # TODO add a check for internal certs
         unit_id = self.charm.unit.name.split("/")[1]
 
         sans = [
@@ -270,6 +285,9 @@ class MongoDBTLS(Object):
             f"{self.charm.app.name}-{unit_id}.{self.charm.app.name}-endpoints",
             str(self.charm.model.get_binding(self.peer_relation).network.bind_address),
         ]
+
+        if external:
+            return sans
 
         # TODO replace with generalaised function
         for shard_relation in self.charm.model.relations[

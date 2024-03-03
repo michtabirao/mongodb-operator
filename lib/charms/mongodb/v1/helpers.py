@@ -189,6 +189,7 @@ def get_mongod_args(
     if auth:
         cmd.extend(["--auth"])
 
+    # todo this should get resolved once we set secrets properly in shared data
     if auth and not config.tls_internal:
         # keyFile cannot be used without auth and cannot be used in tandem with internal TLS
         cmd.extend(
