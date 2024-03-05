@@ -121,7 +121,9 @@ class MongoDBTLS(Object):
                 subject=subject,
                 organization=subject,
                 sans=self._get_app_sans(),
-                sans_ip=["0.0.0.0/0"],
+                sans_ip=[
+                    str(self.charm.model.get_binding(self.peer_relation).network.bind_address)
+                ],
             )
         elif scope == UNIT_SCOPE:
             csr = generate_csr(
