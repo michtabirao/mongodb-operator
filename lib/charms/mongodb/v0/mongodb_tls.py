@@ -78,6 +78,9 @@ class MongoDBTLS(Object):
     def _on_set_tls_private_key(self, event: ActionEvent) -> None:
         """Set the TLS private key, which will be used for requesting the certificate."""
         logger.debug("Request to set TLS private key received.")
+        if self.shard_must_wait_for_config_server():
+            event.fail("TLS cannot be enabled until shard is integrated with config-server")
+
         try:
             self._request_certificate(UNIT_SCOPE, event.params.get("external-key", None))
 
@@ -97,19 +100,41 @@ class MongoDBTLS(Object):
         except ValueError as e:
             event.fail(str(e))
 
+    def _get_subject_name(self):
+        """Retrieve the subject name used in the CSR."""
+        # In sharding, MongoDB requries that all shards use the same subject name in their CSRs.
+        if self.charm.is_role(Config.Role.SHARD):
+            return self.charm.shard.get_config_server_name()
+
+        return self.charm.app.name
+
     def _request_certificate(self, scope: Scopes, param: Optional[str]):
         if param is None:
             key = generate_private_key()
         else:
             key = self._parse_tls_file(param)
 
-        csr = generate_csr(
-            private_key=key,
-            subject=self.get_host(self.charm.unit),
-            organization=self.charm.app.name,
-            sans=self._get_sans(external=scope == UNIT_SCOPE),
-            sans_ip=[str(self.charm.model.get_binding(self.peer_relation).network.bind_address)],
-        )
+        subject = self._get_subject_name()
+        if scope == APP_SCOPE:
+            csr = generate_csr(
+                private_key=key,
+                subject=subject,
+                organization=subject,
+                sans=self._get_app_sans(),
+                sans_ip=["0.0.0.0/0"],
+            )
+        elif scope == UNIT_SCOPE:
+            csr = generate_csr(
+                private_key=key,
+                subject=subject,
+                organization=subject,
+                sans=self._get_unit_sans(),
+                sans_ip=[
+                    str(self.charm.model.get_binding(self.peer_relation).network.bind_address)
+                ],
+            )
+        else:
+            raise NotImplementedError
 
         self.charm.set_secret(scope, Config.TLS.SECRET_KEY_LABEL, key.decode("utf-8"))
         self.charm.set_secret(scope, Config.TLS.SECRET_CSR_LABEL, csr.decode("utf-8"))
@@ -133,10 +158,22 @@ class MongoDBTLS(Object):
             )
         return base64.b64decode(raw_content)
 
-    def _on_tls_relation_joined(self, _: RelationJoinedEvent) -> None:
+    def shard_must_wait_for_config_server(self):
+        return (
+            self.charm.is_role(Config.Role.SHARD) and not self.charm.shard.get_config_server_name()
+        )
+
+    def _on_tls_relation_joined(self, event: RelationJoinedEvent) -> None:
         """Request certificate when TLS relation joined."""
+        if self.shard_must_wait_for_config_server():
+            event.defer()
+            logger.debug("TLS cannot be enabled until shard is integrated with config-server")
+            return
+
         # Shards use the same internal certs set by the config-server
-        if self.charm.unit.is_leader() and not self.charm.is_role(Config.Role.SHARD):
+        if (
+            self.charm.unit.is_leader()
+        ):  # TODO get anser for this and not self.charm.is_role(Config.Role.SHARD):
             self._request_certificate(APP_SCOPE, None)
 
         self._request_certificate(UNIT_SCOPE, None)
@@ -230,6 +267,7 @@ class MongoDBTLS(Object):
 
     def _on_certificate_expiring(self, event: CertificateExpiringEvent) -> None:
         """Request the new certificate when old certificate is expiring."""
+        # TODO copy over Mykola's solution
         if (
             event.certificate.rstrip()
             == self.charm.get_secret(UNIT_SCOPE, Config.TLS.SECRET_CERT_LABEL).rstrip()
@@ -267,18 +305,15 @@ class MongoDBTLS(Object):
 
         self.charm.set_secret(scope, Config.TLS.SECRET_CSR_LABEL, new_csr.decode("utf-8"))
 
-    def _get_sans(self, external: bool) -> List[str]:
+    def _get_unit_sans(self) -> List[str]:
         """Create a list of DNS names for a MongoDB unit.
-
-        Args:
-            external: boolean indicating whether the certificate is for external or internal connections
 
         Returns:
             A list representing the hostnames of the MongoDB unit.
         """
         unit_id = self.charm.unit.name.split("/")[1]
 
-        sans = [
+        return [
             f"{self.charm.app.name}-{unit_id}",
             f"*.{self.charm.app.name}-{unit_id}",
             socket.getfqdn(),
@@ -286,16 +321,15 @@ class MongoDBTLS(Object):
             str(self.charm.model.get_binding(self.peer_relation).network.bind_address),
         ]
 
-        if external:
-            return sans
-
-        # TODO replace with generalaised function
-        for shard_relation in self.charm.model.relations[
-            Config.Relations.CONFIG_SERVER_RELATIONS_NAME
-        ]:
-            shard_sans = self._generate_shard_sans(shard_relation)
-            sans.extend(shard_sans)
-        return sans
+    def _get_app_sans(self) -> List[str]:
+        """Create a list of DNS names for a MongoDB unit.
+        Returns:
+            A list representing the hostnames of the MongoDB unit.
+        """
+        return [
+            f"config-server-*",
+            f"config-server-*.config-server-endpoints",
+        ]
 
     def _generate_shard_sans(self, shard_relation):
         shard_app_name = shard_relation.app.name
